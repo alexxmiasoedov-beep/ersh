@@ -2,7 +2,7 @@
   "telegram_token": "СЮДА_ТОКЕН_БОТА_ОТ_BotFather",
   "telegram_chat_id": "СЮДА_CHAT_ID_ГРУППЫ",
   "start_balance": 100,
-  "watchlist_size": 6,
+  "watchlist_size": null,
   "refresh_minutes": 60,
   "add_score": 0.65,
   "drop_score": 0.5,

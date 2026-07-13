@@ -28,7 +28,7 @@ DEFAULTS = {
     "telegram_token": None,
     "telegram_chat_id": None,
     "start_balance": 100.0,
-    "watchlist_size": 3,
+    "watchlist_size": None,      # null = без ограничения (всё, что прошло add_score)
     "refresh_minutes": 60,
     "add_score": 0.65,
     "drop_score": 0.50,
@@ -134,8 +134,9 @@ class Orchestrator:
                 self.tg.send(f"📋 − {sym}: убран из вотчлиста ({why})")
 
         # добавляем лучших из свежего скрина
+        limit = self.cfg["watchlist_size"]
         for r in results:
-            if len(self.sims) >= self.cfg["watchlist_size"]:
+            if limit is not None and len(self.sims) >= limit:
                 break
             sym = r["symbol"]
             if sym in self.sims or r["score"] < self.cfg["add_score"]:
