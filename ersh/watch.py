@@ -131,9 +131,11 @@ def main():
     ap.add_argument("--poll", type=float, default=2.0, help="интервал опроса, сек")
     ap.add_argument("--order-usdt", type=float, default=None)
     ap.add_argument("--window", type=float, default=15, help="окно метрик, мин")
+    ap.add_argument("--exchange", default="mexc", help="mexc | bingx | gate")
     args = ap.parse_args()
 
-    w = Watcher(args.symbol.upper(), window_min=args.window)
+    from .exchanges import make_client
+    w = Watcher(args.symbol.upper(), client=make_client(args.exchange), window_min=args.window)
     w.prime()
     print(f"Наблюдаю {w.symbol} {args.minutes} мин (опрос каждые {args.poll}с)...")
     deadline = time.time() + args.minutes * 60

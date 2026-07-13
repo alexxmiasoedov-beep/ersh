@@ -169,17 +169,19 @@ def main():
     ap.add_argument("--top", type=int, default=25)
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--out-dir", default="reports")
+    ap.add_argument("--exchange", default="mexc", help="mexc | bingx | gate")
     args = ap.parse_args()
 
+    from .exchanges import make_client
     p = ScreenParams(min_vol=args.min_vol, max_vol=args.max_vol, min_spread=args.min_spread,
                      max_candidates=args.max_candidates, trades_limit=args.trades_limit,
                      workers=args.workers)
-    results = screen(p, log=lambda m: print(m, file=sys.stderr))
+    results = screen(p, client=make_client(args.exchange), log=lambda m: print(m, file=sys.stderr))
 
     os.makedirs(args.out_dir, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    json_path = os.path.join(args.out_dir, f"ersh_{stamp}.json")
-    csv_path = os.path.join(args.out_dir, f"ersh_{stamp}.csv")
+    json_path = os.path.join(args.out_dir, f"ersh_{args.exchange}_{stamp}.json")
+    csv_path = os.path.join(args.out_dir, f"ersh_{args.exchange}_{stamp}.csv")
     with open(json_path, "w") as f:
         json.dump(results, f, indent=1, ensure_ascii=False)
     if results:

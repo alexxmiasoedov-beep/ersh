@@ -212,12 +212,14 @@ def main():
     ap.add_argument("--taker-fee", type=float, default=0.0005)
     ap.add_argument("--min-capture", type=float, default=0.05,
                     help="мин. захват спреда, %%, ниже которого не торгуем")
+    ap.add_argument("--exchange", default="mexc", help="mexc | bingx | gate")
     args = ap.parse_args()
 
     def printer(e):
         print(f"[{time.strftime('%H:%M:%S')}] {e['symbol']} {e['text']}", flush=True)
 
-    sim = Simulator(args.symbol.upper(), order_usdt=args.order_usdt,
+    from .exchanges import make_client
+    sim = Simulator(args.symbol.upper(), client=make_client(args.exchange), order_usdt=args.order_usdt,
                     maker_fee=args.maker_fee, taker_fee=args.taker_fee,
                     min_capture_pct=args.min_capture, on_event=printer)
     sim.run(minutes=args.minutes, poll=args.poll)

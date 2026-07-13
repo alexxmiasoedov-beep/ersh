@@ -1,14 +1,15 @@
-"""Оркестратор: автообновляемый вотчлист + симуляторы + сигналы в Telegram.
+"""Оркестратор: автообновляемый вотчлист по нескольким биржам + симуляторы + Telegram.
 
 Цикл:
-  1. Раз в refresh_minutes прогоняет скринер по всем парам MEXC.
+  1. Раз в refresh_minutes прогоняет скринер по всем парам каждой биржи.
   2. Обновляет вотчлист с гистерезисом: добавляет тикеры со score >= add_score,
-     убирает со score < drop_score (или пропавшие). Изменения — в Telegram.
-  3. На каждый тикер вотчлиста крутится свой симулятор; входы/выходы и
-     PnL-отчёты шлются в Telegram.
-  4. Раз в час — сводка по всем тикерам.
+     убирает со score < drop_score (или пропавшие). Изменения — в лог сервиса.
+  3. На каждую пару (биржа, тикер) крутится свой симулятор; в Telegram идут
+     только 🟢 входы, 🔴 выходы (PnL, время в позиции, баланс биржи) и сводки.
+  4. У каждой биржи свой виртуальный баланс (start_balance) — это счётчик
+     прогресса, на размер позиций он не влияет.
 
-Состояние (вотчлист, накопленный PnL) переживает рестарт в state/state.json.
+Состояние (вотчлист, балансы) переживает рестарт в state/state.json.
 
 CLI:  python3 -m ersh.run [--config config.json]
 """
@@ -18,8 +19,9 @@ import json
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
-from .mexc import Mexc
+from .exchanges import DEFAULT_FEES, NAMES, make_client
 from .screener import ScreenParams, screen
 from .sim import Simulator
 from .tg import Notifier
@@ -27,6 +29,8 @@ from .tg import Notifier
 DEFAULTS = {
     "telegram_token": None,
     "telegram_chat_id": None,
+    "exchanges": ["mexc", "bingx", "gate"],
+    "fees": DEFAULT_FEES,
     "start_balance": 100.0,
     "watchlist_size": None,      # null = без ограничения (всё, что прошло add_score)
     "refresh_minutes": 60,
@@ -34,8 +38,6 @@ DEFAULTS = {
     "drop_score": 0.50,
     "max_competition": 0.4,
     "order_usdt": None,          # null = авто (80% клипа бота)
-    "maker_fee": 0.0,
-    "taker_fee": 0.0005,
     "poll_seconds": 2.0,
     "summary_minutes": 60,
     "state_dir": "state",
@@ -49,8 +51,8 @@ def load_config(path):
         with open(path) as f:
             user = json.load(f)
         for k, v in user.items():
-            if k == "screener" and isinstance(v, dict):
-                cfg["screener"] = {**DEFAULTS["screener"], **v}
+            if k in ("screener", "fees") and isinstance(v, dict):
+                cfg[k] = {**DEFAULTS[k], **v}
             else:
                 cfg[k] = v
     return cfg
@@ -59,111 +61,140 @@ def load_config(path):
 class Orchestrator:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.client = Mexc()
+        self.exchanges = [e.lower() for e in cfg["exchanges"]]
+        self.clients = {ex: make_client(ex) for ex in self.exchanges}
         self.tg = Notifier(cfg["telegram_token"], cfg["telegram_chat_id"])
-        self.sims = {}      # symbol -> (Simulator, Thread)
-        self.scores = {}    # symbol -> последний score из скринера
+        self.sims = {}      # (exchange, symbol) -> (Simulator, Thread)
+        self.scores = {ex: {} for ex in self.exchanges}
+        self.balances = {ex: {"trades": 0, "pnl": 0.0, "balance": cfg["start_balance"]}
+                         for ex in self.exchanges}
         self.state_path = os.path.join(cfg["state_dir"], "state.json")
         os.makedirs(cfg["state_dir"], exist_ok=True)
-        self.total = {"trades": 0, "pnl": 0.0, "balance": cfg["start_balance"]}
         self._load_state()
 
     # ---------- состояние ----------
 
     def _load_state(self):
-        if os.path.exists(self.state_path):
-            with open(self.state_path) as f:
-                st = json.load(f)
-            self.scores = st.get("scores", {})
-            self.total.update(st.get("total", {}))
+        if not os.path.exists(self.state_path):
+            return
+        with open(self.state_path) as f:
+            st = json.load(f)
+        scores = st.get("scores", {})
+        balances = st.get("balances", {})
+        # старый однобиржевой формат: плоские scores и общий total -> это MEXC
+        if scores and not any(k in NAMES for k in scores):
+            scores = {"mexc": scores}
+        if not balances and "total" in st:
+            balances = {"mexc": st["total"]}
+        for ex, v in scores.items():
+            if ex in self.scores:
+                self.scores[ex] = v
+        for ex, v in balances.items():
+            if ex in self.balances:
+                self.balances[ex].update(v)
 
     def _save_state(self):
         with open(self.state_path, "w") as f:
-            json.dump({"scores": self.scores, "watchlist": sorted(self.sims),
-                       "total": self.total}, f, indent=1)
+            json.dump({"scores": self.scores,
+                       "watchlist": sorted(f"{ex}:{sym}" for ex, sym in self.sims),
+                       "balances": self.balances}, f, indent=1)
 
     # ---------- симуляторы ----------
 
     def _log(self, text):
         print(f"[{time.strftime('%H:%M:%S')}] {text}", flush=True)
 
-    def on_event(self, e):
+    def on_event(self, ex, e):
         kind = e["kind"]
+        exname = NAMES[ex]
         if kind == "exit":
-            self.total["trades"] += 1
-            self.total["pnl"] += e.get("pnl", 0.0)
-            self.total["balance"] += e.get("pnl", 0.0)
+            b = self.balances[ex]
+            b["trades"] += 1
+            b["pnl"] += e.get("pnl", 0.0)
+            b["balance"] += e.get("pnl", 0.0)
             self._save_state()
-            self.tg.send(f"{e['symbol']}: {e['text']}\n"
-                         f"💰 Баланс: ${self.total['balance']:.2f} "
+            self.tg.send(f"[{exname}] {e['symbol']}: {e['text']}\n"
+                         f"💰 Баланс {exname}: ${b['balance']:.2f} "
                          f"(старт ${self.cfg['start_balance']:.0f}, "
-                         f"PnL {self.total['pnl']:+.4f}, сделок {self.total['trades']})")
+                         f"PnL {b['pnl']:+.4f}, сделок {b['trades']})")
         elif kind == "entry":
-            self.tg.send(f"{e['symbol']}: {e['text']}")
+            self.tg.send(f"[{exname}] {e['symbol']}: {e['text']}")
         else:
-            print(f"[{time.strftime('%H:%M:%S')}] {e['symbol']} {e['text']}", flush=True)
+            self._log(f"[{exname}] {e['symbol']} {e['text']}")
 
-    def start_sim(self, symbol):
-        sim = Simulator(symbol, client=Mexc(), order_usdt=self.cfg["order_usdt"],
-                        maker_fee=self.cfg["maker_fee"], taker_fee=self.cfg["taker_fee"],
-                        on_event=self.on_event)
+    def start_sim(self, ex, symbol):
+        fees = self.cfg["fees"].get(ex, {})
+        sim = Simulator(symbol, client=make_client(ex), order_usdt=self.cfg["order_usdt"],
+                        maker_fee=fees.get("maker", 0.0), taker_fee=fees.get("taker", 0.001),
+                        on_event=lambda e, ex=ex: self.on_event(ex, e))
         th = threading.Thread(target=sim.run, kwargs={"poll": self.cfg["poll_seconds"]},
-                              daemon=True, name=f"sim-{symbol}")
+                              daemon=True, name=f"sim-{ex}-{symbol}")
         th.start()
-        self.sims[symbol] = (sim, th)
+        self.sims[(ex, symbol)] = (sim, th)
 
-    def stop_sim(self, symbol):
-        sim, _ = self.sims.pop(symbol)
+    def stop_sim(self, key):
+        sim, _ = self.sims.pop(key)
         sim.stop = True
 
     # ---------- вотчлист ----------
 
     def refresh_watchlist(self):
         sp = ScreenParams(**self.cfg["screener"])
-        try:
-            results = screen(sp, client=self.client)
-        except Exception as e:
-            self._log(f"⚠️ Скринер упал: {e}")
-            return
-        by_symbol = {r["symbol"]: r for r in results}
-        self.scores = {s: r["score"] for s, r in by_symbol.items()}
-
-        # выбрасываем испортившиеся
-        for sym in list(self.sims):
-            r = by_symbol.get(sym)
-            if r is None or r["score"] < self.cfg["drop_score"]:
-                why = "пропал из скрина" if r is None else f"score упал до {r['score']:.2f}"
-                self.stop_sim(sym)
-                self._log(f"📋 − {sym}: убран из вотчлиста ({why})")
-
-        # добавляем лучших из свежего скрина
-        limit = self.cfg["watchlist_size"]
-        for r in results:
-            if limit is not None and len(self.sims) >= limit:
-                break
-            sym = r["symbol"]
-            if sym in self.sims or r["score"] < self.cfg["add_score"]:
+        with ThreadPoolExecutor(max_workers=len(self.exchanges)) as pool:
+            futures = {ex: pool.submit(screen, sp, self.clients[ex]) for ex in self.exchanges}
+        for ex, fut in futures.items():
+            exname = NAMES[ex]
+            try:
+                results = fut.result()
+            except Exception as e:
+                self._log(f"⚠️ [{exname}] скринер упал: {e}")
                 continue
-            self.start_sim(sym)
-            self._log(f"📋 + {sym}: в вотчлист (score {r['score']:.2f}, "
-                      f"спред {r['spread_pct']:.2f}%, клип ${r['median_clip_usdt']:.2f}, "
-                      f"объём 24ч ${r['quote_vol_24h']:.0f})")
+            by_symbol = {r["symbol"]: r for r in results}
+            self.scores[ex] = {s: r["score"] for s, r in by_symbol.items()}
+
+            # выбрасываем испортившиеся
+            for key in [k for k in self.sims if k[0] == ex]:
+                r = by_symbol.get(key[1])
+                if r is None or r["score"] < self.cfg["drop_score"]:
+                    why = "пропал из скрина" if r is None else f"score упал до {r['score']:.2f}"
+                    self.stop_sim(key)
+                    self._log(f"📋 [{exname}] − {key[1]}: убран из вотчлиста ({why})")
+
+            # добавляем лучших из свежего скрина
+            limit = self.cfg["watchlist_size"]
+            for r in results:
+                if limit is not None and sum(1 for k in self.sims if k[0] == ex) >= limit:
+                    break
+                sym = r["symbol"]
+                if (ex, sym) in self.sims or r["score"] < self.cfg["add_score"]:
+                    continue
+                self.start_sim(ex, sym)
+                self._log(f"📋 [{exname}] + {sym}: в вотчлист (score {r['score']:.2f}, "
+                          f"спред {r['spread_pct']:.2f}%, клип ${r['median_clip_usdt']:.2f}, "
+                          f"объём 24ч ${r['quote_vol_24h']:.0f})")
         self._save_state()
 
     def hourly_summary(self):
-        lines = [f"⏱ Сводка ersh | 💰 баланс ${self.total['balance']:.2f}, "
-                 f"всего сделок {self.total['trades']}, PnL {self.total['pnl']:+.4f} USDT"]
-        for sym, (sim, _) in sorted(self.sims.items()):
+        lines = ["⏱ Сводка ersh"]
+        for ex in self.exchanges:
+            b = self.balances[ex]
+            n = sum(1 for k in self.sims if k[0] == ex)
+            lines.append(f"💰 {NAMES[ex]}: баланс ${b['balance']:.2f}, "
+                         f"PnL {b['pnl']:+.4f}, сделок {b['trades']}, тикеров {n}")
+        for (ex, sym), (sim, _) in sorted(self.sims.items()):
             s = sim.stats
+            if not s["trades"] and sim.state == "FLAT":
+                continue
             wr = s["wins"] / s["trades"] * 100 if s["trades"] else 0
-            lines.append(f"  {sym}: сделок {s['trades']}, winrate {wr:.0f}%, "
+            lines.append(f"  [{NAMES[ex]}] {sym}: сделок {s['trades']}, winrate {wr:.0f}%, "
                          f"PnL {s['pnl']:+.4f}, состояние {sim.state}")
         self.tg.send("\n".join(lines))
 
     # ---------- главный цикл ----------
 
     def run(self):
-        self.tg.send("🚀 ersh запущен: скрин рынка + симуляция + сигналы")
+        self.tg.send(f"🚀 ersh запущен: {', '.join(NAMES[ex] for ex in self.exchanges)} — "
+                     f"скрин рынка + симуляция + сигналы")
         next_refresh = 0.0
         next_summary = time.time() + self.cfg["summary_minutes"] * 60
         while True:
