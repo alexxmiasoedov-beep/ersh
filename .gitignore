@@ -1,4 +1,6 @@
 reports/
+state/
+config.json
 __pycache__/
 *.pyc
 .venv/

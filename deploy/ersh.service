@@ -1,0 +1,21 @@
+# Постоянный запуск оркестратора ersh (пользовательский systemd-юнит).
+# Установка:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/ersh.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ersh
+#   journalctl --user -u ersh -f        # логи
+# Чтобы юнит работал после выхода из ssh: loginctl enable-linger $USER
+
+[Unit]
+Description=ersh: скрин рынка + симуляция + сигналы в Telegram
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/projects/ersh
+ExecStart=/usr/bin/python3 -u -m ersh.run --config config.json
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

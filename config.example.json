@@ -1,0 +1,21 @@
+{
+  "telegram_token": "СЮДА_ТОКЕН_БОТА_ОТ_BotFather",
+  "telegram_chat_id": "СЮДА_CHAT_ID_ГРУППЫ",
+  "watchlist_size": 3,
+  "refresh_minutes": 60,
+  "add_score": 0.65,
+  "drop_score": 0.5,
+  "max_competition": 0.4,
+  "order_usdt": null,
+  "maker_fee": 0.0,
+  "taker_fee": 0.0005,
+  "poll_seconds": 2.0,
+  "summary_minutes": 60,
+  "state_dir": "state",
+  "screener": {
+    "min_vol": 500,
+    "max_vol": 300000,
+    "min_spread": 0.08,
+    "max_candidates": 150
+  }
+}
