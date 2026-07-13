@@ -84,6 +84,9 @@ class Orchestrator:
 
     # ---------- симуляторы ----------
 
+    def _log(self, text):
+        print(f"[{time.strftime('%H:%M:%S')}] {text}", flush=True)
+
     def on_event(self, e):
         kind = e["kind"]
         if kind == "exit":
@@ -95,7 +98,7 @@ class Orchestrator:
                          f"💰 Баланс: ${self.total['balance']:.2f} "
                          f"(старт ${self.cfg['start_balance']:.0f}, "
                          f"PnL {self.total['pnl']:+.4f}, сделок {self.total['trades']})")
-        elif kind in ("entry", "summary"):
+        elif kind == "entry":
             self.tg.send(f"{e['symbol']}: {e['text']}")
         else:
             print(f"[{time.strftime('%H:%M:%S')}] {e['symbol']} {e['text']}", flush=True)
@@ -120,7 +123,7 @@ class Orchestrator:
         try:
             results = screen(sp, client=self.client)
         except Exception as e:
-            self.tg.send(f"⚠️ Скринер упал: {e}")
+            self._log(f"⚠️ Скринер упал: {e}")
             return
         by_symbol = {r["symbol"]: r for r in results}
         self.scores = {s: r["score"] for s, r in by_symbol.items()}
@@ -131,7 +134,7 @@ class Orchestrator:
             if r is None or r["score"] < self.cfg["drop_score"]:
                 why = "пропал из скрина" if r is None else f"score упал до {r['score']:.2f}"
                 self.stop_sim(sym)
-                self.tg.send(f"📋 − {sym}: убран из вотчлиста ({why})")
+                self._log(f"📋 − {sym}: убран из вотчлиста ({why})")
 
         # добавляем лучших из свежего скрина
         limit = self.cfg["watchlist_size"]
@@ -142,9 +145,9 @@ class Orchestrator:
             if sym in self.sims or r["score"] < self.cfg["add_score"]:
                 continue
             self.start_sim(sym)
-            self.tg.send(f"📋 + {sym}: в вотчлист (score {r['score']:.2f}, "
-                         f"спред {r['spread_pct']:.2f}%, клип ${r['median_clip_usdt']:.2f}, "
-                         f"объём 24ч ${r['quote_vol_24h']:.0f})")
+            self._log(f"📋 + {sym}: в вотчлист (score {r['score']:.2f}, "
+                      f"спред {r['spread_pct']:.2f}%, клип ${r['median_clip_usdt']:.2f}, "
+                      f"объём 24ч ${r['quote_vol_24h']:.0f})")
         self._save_state()
 
     def hourly_summary(self):
