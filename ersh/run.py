@@ -27,6 +27,7 @@ from .tg import Notifier
 DEFAULTS = {
     "telegram_token": None,
     "telegram_chat_id": None,
+    "start_balance": 100.0,
     "watchlist_size": 3,
     "refresh_minutes": 60,
     "add_score": 0.65,
@@ -64,7 +65,7 @@ class Orchestrator:
         self.scores = {}    # symbol -> последний score из скринера
         self.state_path = os.path.join(cfg["state_dir"], "state.json")
         os.makedirs(cfg["state_dir"], exist_ok=True)
-        self.total = {"trades": 0, "pnl": 0.0}
+        self.total = {"trades": 0, "pnl": 0.0, "balance": cfg["start_balance"]}
         self._load_state()
 
     # ---------- состояние ----------
@@ -74,7 +75,7 @@ class Orchestrator:
             with open(self.state_path) as f:
                 st = json.load(f)
             self.scores = st.get("scores", {})
-            self.total = st.get("total", self.total)
+            self.total.update(st.get("total", {}))
 
     def _save_state(self):
         with open(self.state_path, "w") as f:
@@ -85,13 +86,19 @@ class Orchestrator:
 
     def on_event(self, e):
         kind = e["kind"]
-        if kind in ("entry", "exit", "summary"):
-            self.tg.send(f"{e['symbol']}: {e['text']}")
-        else:
-            print(f"[{time.strftime('%H:%M:%S')}] {e['symbol']} {e['text']}", flush=True)
         if kind == "exit":
             self.total["trades"] += 1
             self.total["pnl"] += e.get("pnl", 0.0)
+            self.total["balance"] += e.get("pnl", 0.0)
+            self._save_state()
+            self.tg.send(f"{e['symbol']}: {e['text']}\n"
+                         f"💰 Баланс: ${self.total['balance']:.2f} "
+                         f"(старт ${self.cfg['start_balance']:.0f}, "
+                         f"PnL {self.total['pnl']:+.4f}, сделок {self.total['trades']})")
+        elif kind in ("entry", "summary"):
+            self.tg.send(f"{e['symbol']}: {e['text']}")
+        else:
+            print(f"[{time.strftime('%H:%M:%S')}] {e['symbol']} {e['text']}", flush=True)
 
     def start_sim(self, symbol):
         sim = Simulator(symbol, client=Mexc(), order_usdt=self.cfg["order_usdt"],
@@ -140,8 +147,8 @@ class Orchestrator:
         self._save_state()
 
     def hourly_summary(self):
-        lines = [f"⏱ Сводка ersh | всего сделок {self.total['trades']}, "
-                 f"PnL {self.total['pnl']:+.4f} USDT"]
+        lines = [f"⏱ Сводка ersh | 💰 баланс ${self.total['balance']:.2f}, "
+                 f"всего сделок {self.total['trades']}, PnL {self.total['pnl']:+.4f} USDT"]
         for sym, (sim, _) in sorted(self.sims.items()):
             s = sim.stats
             wr = s["wins"] / s["trades"] * 100 if s["trades"] else 0
