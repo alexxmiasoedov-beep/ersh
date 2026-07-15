@@ -74,6 +74,8 @@ class BingX(Rest):
 
     def depth(self, symbol, limit=20):
         d = self._data("/openApi/spot/v1/market/depth", symbol=symbol, limit=limit)
+        if not isinstance(d, dict):      # изредка в data приходит строка — пропускаем такт
+            return {"bids": [], "asks": []}
         # BingX отдаёт asks по убыванию — приводим к обычному порядку
         bids = sorted(d.get("bids", []), key=lambda lv: float(lv[0]), reverse=True)
         asks = sorted(d.get("asks", []), key=lambda lv: float(lv[0]))

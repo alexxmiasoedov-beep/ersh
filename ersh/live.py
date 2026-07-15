@@ -133,7 +133,13 @@ class LiveTrader:
     # ---------- работа с заявками ----------
 
     def fetch(self, ticker, order_id):
-        return self.x.fetch_order(order_id, self.ccxt_symbol(ticker))
+        """None — заявка исчезла (снята извне и вычищена биржей)."""
+        try:
+            return self.x.fetch_order(order_id, self.ccxt_symbol(ticker))
+        except (ccxt.OrderNotFound, ccxt.BadRequest) as e:
+            if "order not exist" in str(e):
+                return None
+            raise
 
     def cancel_silent(self, ticker, order_id):
         """Снять заявку; если она уже исполнилась/снята — не падать."""
@@ -199,6 +205,10 @@ class LiveTrader:
 
         if p.state == "BUYING":
             o = self.fetch(ticker, p.order_id)
+            if o is None:
+                self._log(f"{ticker}: заявка на покупку исчезла (снята извне) — сброс")
+                self.pos[ticker] = Position()
+                return
             if o["status"] == "closed":
                 p.entry_qty, p.entry_cost = self.filled_parts(o)
                 p.entry_time = time.time()
@@ -210,6 +220,9 @@ class LiveTrader:
                   or os.path.exists(self.stop_file)):
                 self.cancel_silent(ticker, p.order_id)
                 o = self.fetch(ticker, p.order_id)
+                if o is None:
+                    self.pos[ticker] = Position()
+                    return
                 p.entry_qty, p.entry_cost = self.filled_parts(o)
                 if p.entry_qty > 0:              # частичный филл — доводим до выхода
                     p.entry_time = time.time()
@@ -232,11 +245,14 @@ class LiveTrader:
 
         if p.state == "SELLING":
             o = self.fetch(ticker, p.order_id)
+            if o is None:
+                p.state = "HOLDING"      # продажа исчезла — переставим заново
+                return
             if o["status"] == "closed":
                 self.settle(ticker, o, taker=False)
             elif time.time() - p.entry_time > self.live["max_hold_min"] * 60:
                 self.cancel_silent(ticker, p.order_id)
-                o = self.fetch(ticker, p.order_id)
+                o = self.fetch(ticker, p.order_id) or {}
                 left_qty = p.entry_qty - float(o.get("filled") or 0.0)
                 sym = self.ccxt_symbol(ticker)
                 left_qty = float(self.x.amount_to_precision(sym, left_qty))
@@ -252,7 +268,7 @@ class LiveTrader:
                 self.settle(ticker, o, taker=False)
             elif time.time() - p.placed_at > self.live["reprice_sec"]:
                 self.cancel_silent(ticker, p.order_id)
-                o = self.fetch(ticker, p.order_id)
+                o = self.fetch(ticker, p.order_id) or {}
                 sold_qty = float(o.get("filled") or 0.0)
                 if sold_qty > 0 and o["status"] == "closed":
                     self.settle(ticker, o, taker=False)
