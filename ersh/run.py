@@ -38,6 +38,7 @@ DEFAULTS = {
     "drop_score": 0.50,
     "max_competition": 0.4,
     "order_usdt": None,          # null = авто (80% клипа бота)
+    "fill_model": "pessimistic", # pessimistic | optimistic (см. ersh/sim.py)
     "poll_seconds": 2.0,
     "summary_minutes": 60,
     "state_dir": "state",
@@ -126,6 +127,7 @@ class Orchestrator:
         fees = self.cfg["fees"].get(ex, {})
         sim = Simulator(symbol, client=make_client(ex), order_usdt=self.cfg["order_usdt"],
                         maker_fee=fees.get("maker", 0.0), taker_fee=fees.get("taker", 0.001),
+                        fill_model=self.cfg["fill_model"],
                         on_event=lambda e, ex=ex: self.on_event(ex, e))
         th = threading.Thread(target=sim.run, kwargs={"poll": self.cfg["poll_seconds"]},
                               daemon=True, name=f"sim-{ex}-{symbol}")

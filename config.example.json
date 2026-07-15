@@ -14,6 +14,7 @@
   "drop_score": 0.5,
   "max_competition": 0.4,
   "order_usdt": null,
+  "fill_model": "pessimistic",
   "poll_seconds": 2.0,
   "summary_minutes": 60,
   "state_dir": "state",

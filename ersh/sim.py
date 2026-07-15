@@ -1,9 +1,18 @@
 """Симулятор сбора спреда, максимально приближенный к реальности.
 
-Paper-trading об живую ленту MEXC. Консервативная модель исполнения:
-наша лимитка исполняется только если реальный принт прошёл ЛУЧШЕ нашей цены,
-либо по нашей цене — но только после того, как через уровень прошёл объём,
-стоявший в очереди перед нами на момент постановки (+ наш собственный объём).
+Paper-trading об живую ленту биржи. Две модели исполнения:
+
+optimistic — лимитка исполняется, если принт прошёл лучше нашей цены, либо
+по нашей цене после прохождения объёма очереди (+ наш объём). Завышает
+результат: заявка невидима для рынка, MM-бот и конкуренты не реагируют.
+
+pessimistic (по умолчанию) — сверху добавлены три поправки:
+  * задержка FILL_DELAY_SEC: принты сразу после постановки не считаются
+    (заявка ещё «не доехала» до стакана);
+  * принт ровно по нашей цене двигает очередь только на AT_PRICE_SHARE
+    своего объёма (остальное съедают MM-бот и конкуренты впереди нас);
+  * мгновенный филл — только если принт прошёл СКВОЗЬ нашу цену.
+Реальность лежит между двумя моделями, ближе к пессимистичной.
 
 Стратегия — как в видео: одна позиция за раз.
 FLAT -> ставим лимитку на покупку у нижней границы ерша ->
@@ -20,6 +29,10 @@ from .watch import Watcher, quantile
 
 MIN_NOTIONAL = 1.0          # минимальная заявка на споте MEXC, USDT
 
+# Параметры пессимистичной модели исполнения
+FILL_DELAY_SEC = 3.0        # заявка «доезжает» до стакана: ранние принты не наши
+AT_PRICE_SHARE = 0.25       # доля принта по нашей цене, двигающая нашу очередь
+
 
 class Order:
     def __init__(self, side, price, notional, queue_ahead):
@@ -34,7 +47,7 @@ class Order:
 class Simulator:
     def __init__(self, symbol, client=None, order_usdt=None, maker_fee=0.0, taker_fee=0.0005,
                  window_min=15.0, max_hold_min=45.0, reprice_sec=45.0, min_capture_pct=0.05,
-                 on_event=None):
+                 fill_model="pessimistic", on_event=None):
         self.symbol = symbol
         self.client = client or Mexc()
         self.watcher = Watcher(symbol, self.client, window_min=window_min)
@@ -44,6 +57,7 @@ class Simulator:
         self.max_hold_sec = max_hold_min * 60
         self.reprice_sec = reprice_sec
         self.min_capture_pct = min_capture_pct
+        self.fill_model = fill_model
         self.on_event = on_event or (lambda e: None)
 
         self.state = "FLAT"               # FLAT | BUY_PLACED | LONG | SELL_PLACED
@@ -76,26 +90,24 @@ class Simulator:
     # ---------- модель исполнения ----------
 
     def check_fill(self, new_hits):
-        """Проверка лимитки об новые принты. Консервативно: по нашей цене — только
-        после прохождения объёма очереди + нашего объёма."""
+        """Проверка лимитки об новые принты. По нашей цене — только после
+        прохождения объёма очереди + нашего объёма; в пессимистичной модели
+        принты сразу после постановки не считаются, а по нашей цене засчитывается
+        лишь AT_PRICE_SHARE объёма (см. докстринг модуля)."""
         o = self.order
         if not o:
             return False
+        pess = self.fill_model == "pessimistic"
         for side, notional, ts, price in new_hits:
-            if o.side == "BUY":
-                if price < o.price - 1e-12:
-                    return True                       # прошли сквозь наш уровень
-                if abs(price - o.price) < 1e-12:
-                    o.filled_through += notional
-                    if o.filled_through >= o.queue_ahead + o.notional:
-                        return True
-            else:
-                if price > o.price + 1e-12:
+            if pess and ts / 1000.0 < o.placed_at + FILL_DELAY_SEC:
+                continue                              # заявка ещё не стояла в стакане
+            through = price < o.price - 1e-12 if o.side == "BUY" else price > o.price + 1e-12
+            if through:
+                return True                           # прошли сквозь наш уровень
+            if abs(price - o.price) < 1e-12:
+                o.filled_through += notional * (AT_PRICE_SHARE if pess else 1.0)
+                if o.filled_through >= o.queue_ahead + o.notional:
                     return True
-                if abs(price - o.price) < 1e-12:
-                    o.filled_through += notional
-                    if o.filled_through >= o.queue_ahead + o.notional:
-                        return True
         return False
 
     # ---------- стратегия ----------
@@ -213,6 +225,7 @@ def main():
     ap.add_argument("--min-capture", type=float, default=0.05,
                     help="мин. захват спреда, %%, ниже которого не торгуем")
     ap.add_argument("--exchange", default="mexc", help="mexc | bingx | gate")
+    ap.add_argument("--fill-model", default="pessimistic", choices=["pessimistic", "optimistic"])
     args = ap.parse_args()
 
     def printer(e):
@@ -221,7 +234,8 @@ def main():
     from .exchanges import make_client
     sim = Simulator(args.symbol.upper(), client=make_client(args.exchange), order_usdt=args.order_usdt,
                     maker_fee=args.maker_fee, taker_fee=args.taker_fee,
-                    min_capture_pct=args.min_capture, on_event=printer)
+                    min_capture_pct=args.min_capture, fill_model=args.fill_model,
+                    on_event=printer)
     sim.run(minutes=args.minutes, poll=args.poll)
 
 
