@@ -38,6 +38,7 @@ LIVE_DEFAULTS = {
     "reprice_sec": 45.0,
     "min_capture_pct": 0.05,
     "poll_seconds": 2.0,
+    "aggressive_quotes": False,  # true: встаём на тик лучше лучшего бида/аска
 }
 
 
@@ -183,8 +184,13 @@ class LiveTrader:
         if "band_lo" not in m or "bid" not in m:
             return
         tick = m.get("tick", 0.0) or 0.0
-        buy_p = min(m["buy_price"], m["ask"] - tick)
-        sell_p = max(m["sell_price"], m["bid"] + tick)
+        if self.live["aggressive_quotes"] and tick:
+            # первыми в очереди: на тик лучше лучших цен, не пересекая спред
+            buy_p = min(m["bid"] + tick, m["ask"] - tick)
+            sell_p = max(m["ask"] - tick, m["bid"] + tick)
+        else:
+            buy_p = min(m["buy_price"], m["ask"] - tick)
+            sell_p = max(m["sell_price"], m["bid"] + tick)
         capture = (sell_p - buy_p) / ((m["bid"] + m["ask"]) / 2) * 100 - 2 * self.maker_fee * 100
 
         if p.state == "FLAT":
