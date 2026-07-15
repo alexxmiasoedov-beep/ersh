@@ -1,6 +1,19 @@
 {
   "telegram_token": "СЮДА_ТОКЕН_БОТА_ОТ_BotFather",
   "telegram_chat_id": "СЮДА_CHAT_ID_ГРУППЫ",
+  "bingx_api_key": null,
+  "bingx_api_secret": null,
+  "live": {
+    "exchange": "bingx",
+    "tickers": [],
+    "order_usdt": 5.0,
+    "max_positions": 3,
+    "max_daily_loss": 5.0,
+    "max_hold_min": 45,
+    "reprice_sec": 45,
+    "min_capture_pct": 0.05,
+    "poll_seconds": 2.0
+  },
   "exchanges": ["mexc", "bingx", "gate"],
   "fees": {
     "mexc": {"maker": 0.0, "taker": 0.0005},
