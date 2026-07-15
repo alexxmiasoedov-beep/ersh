@@ -65,6 +65,16 @@ class LiveTrader:
                              "secret": cfg["bingx_api_secret"],
                              "options": {"defaultType": "spot"}})
         self.x.load_markets()
+        # BingX запрещает API-торговлю на части символов (код 100421)
+        info = self.x.spotV1PublicGetCommonSymbols()
+        allowed = {s["symbol"] for s in info["data"]["symbols"]
+                   if s.get("apiStateBuy") and s.get("apiStateSell")}
+        bad = [t for t in live["tickers"] if t not in allowed]
+        if bad:
+            print(f"⚠️ API-торговля запрещена, выкидываю: {', '.join(bad)}", flush=True)
+            live["tickers"] = [t for t in live["tickers"] if t in allowed]
+        if not live["tickers"]:
+            raise SystemExit("после фильтра apiState не осталось тикеров")
         fees = cfg.get("fees", {}).get("bingx", {})
         self.maker_fee = fees.get("maker", 0.001)
         self.watchers = {t: Watcher(t, make_client("bingx")) for t in live["tickers"]}
