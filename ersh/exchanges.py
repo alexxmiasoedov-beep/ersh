@@ -58,8 +58,13 @@ class BingX(Rest):
                 for t in self._data("/openApi/spot/v1/ticker/24hr")]
 
     def trades(self, symbol, limit=100):
+        resp = self.get("/openApi/spot/v1/market/trades", symbol=symbol, limit=limit)
+        if resp and resp.get("code") != 0 and "no trades" in str(resp.get("msg", "")).lower():
+            return []                     # пустая лента у неликвида — не ошибка
+        if not resp or resp.get("code") != 0:
+            raise RuntimeError(f"BingX trades: {resp and resp.get('msg')}")
         out = []
-        for t in self._data("/openApi/spot/v1/market/trades", symbol=symbol, limit=limit):
+        for t in resp["data"]:
             price, qty = float(t["price"]), float(t["qty"])
             out.append({"time": int(t["time"]), "price": str(t["price"]),
                         "qty": str(t["qty"]), "quoteQty": price * qty,

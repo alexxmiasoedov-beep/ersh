@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import time
+import traceback
 
 import ccxt
 
@@ -283,10 +284,16 @@ class LiveTrader:
         self.total["pnl"] += pnl
         self._save_state()
         tag = "⏱ стоп по времени, выход маркетом" if taker else "🔴 ВЫХОД"
+        try:
+            usdt = self.x.fetch_balance().get("USDT", {}).get("free", 0.0)
+            bal_line = f"\n💰 Реальный баланс: {usdt:.2f} USDT"
+        except ccxt.BaseError:
+            bal_line = ""
         self.tg.send(f"[LIVE] {ticker}: {tag}: PnL {pnl:+.4f} USDT, "
                      f"в позиции {held:.1f} мин\n"
                      f"💰 LIVE всего: {self.total['pnl']:+.4f} USDT за "
-                     f"{self.total['trades']} сделок (сегодня {self.day_pnl:+.4f})")
+                     f"{self.total['trades']} сделок (сегодня {self.day_pnl:+.4f})"
+                     f"{bal_line}")
         self.pos[ticker] = Position()
 
     # ---------- главный цикл ----------
@@ -308,7 +315,9 @@ class LiveTrader:
                 except ccxt.NetworkError as e:
                     self._log(f"⚠️ {t}: сеть: {e}")
                 except Exception as e:
-                    self._log(f"⚠️ {t}: {type(e).__name__}: {e}")
+                    tb = traceback.extract_tb(e.__traceback__)[-1]
+                    self._log(f"⚠️ {t}: {type(e).__name__}: {e} "
+                              f"({tb.filename.rsplit('/', 1)[-1]}:{tb.lineno})")
                 time.sleep(self.live["poll_seconds"] / max(1, len(self.live["tickers"])))
 
 
